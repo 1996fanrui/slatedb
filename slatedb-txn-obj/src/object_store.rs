@@ -124,6 +124,27 @@ impl<T: Send + Sync> TransactionalStorageProtocol<T, MonotonicId>
         }
         Ok(None)
     }
+
+    async fn try_read_latest_if_newer(
+        &self,
+        current_id: MonotonicId,
+    ) -> Result<Option<(MonotonicId, T)>, TransactionalObjectError> {
+        // A LIST is enough to discover the latest version ID; only fetch the
+        // content when the ID actually moved. This keeps pollers from re-reading
+        // an unchanged object on every tick.
+        let files = self.list(Unbounded, Unbounded).await?;
+        match files.last() {
+            None => Err(TransactionalObjectError::InvalidObjectState),
+            Some(file) if file.id == current_id => Ok(None),
+            // A newer version exists: delegate to try_read_latest, which already
+            // handles the list/read race against GC deletions.
+            Some(_) => match self.try_read_latest().await? {
+                None => Err(TransactionalObjectError::InvalidObjectState),
+                Some((id, _)) if id == current_id => Ok(None),
+                Some(latest) => Ok(Some(latest)),
+            },
+        }
+    }
 }
 
 #[async_trait]
@@ -193,7 +214,7 @@ mod tests {
     use crate::tests::{new_store, TestVal, TestValCodec};
     use crate::{
         MonotonicId, ObjectCodec, SequencedStorageProtocol, SimpleTransactionalObject,
-        TransactionalObject, TransactionalStorageProtocol,
+        TransactionalObject, TransactionalObjectError, TransactionalStorageProtocol,
     };
     use chrono::Utc;
     use futures::stream::{self, BoxStream};
@@ -360,6 +381,36 @@ mod tests {
         let missing = store.try_read(1.into()).await.unwrap();
 
         assert!(missing.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_try_read_latest_if_newer_skips_unchanged() {
+        let store = new_store();
+        let v1 = TestVal {
+            epoch: 1,
+            payload: 1,
+        };
+        let id1 = store.write(None, &v1).await.unwrap();
+
+        // Same id: the caller's copy is up to date, nothing is returned.
+        assert!(store.try_read_latest_if_newer(id1).await.unwrap().is_none());
+
+        // A newer version exists: it is read and returned.
+        let v2 = TestVal {
+            epoch: 1,
+            payload: 2,
+        };
+        let id2 = store.write(Some(id1), &v2).await.unwrap();
+        let (latest_id, latest_val) = store.try_read_latest_if_newer(id1).await.unwrap().unwrap();
+        assert_eq!(latest_id, id2);
+        assert_eq!(latest_val, v2);
+    }
+
+    #[tokio::test]
+    async fn test_try_read_latest_if_newer_empty_store_is_invalid_state() {
+        let store = new_store();
+        let err = store.try_read_latest_if_newer(1.into()).await.unwrap_err();
+        assert!(matches!(err, TransactionalObjectError::InvalidObjectState));
     }
 
     /// Validate that try_read_latest retries when a listed file is missing on read.

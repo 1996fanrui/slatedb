@@ -513,11 +513,10 @@ impl<T: Clone + Send + Sync, Id: Copy + PartialEq + Send + Sync> TransactionalOb
     }
 
     async fn refresh(&mut self) -> Result<&T, TransactionalObjectError> {
-        let Some((id, new_val)) = self.ops.try_read_latest().await? else {
-            return Err(TransactionalObjectError::InvalidObjectState);
-        };
-        self.id = id;
-        self.object = new_val;
+        if let Some((id, new_val)) = self.ops.try_read_latest_if_newer(self.id).await? {
+            self.id = id;
+            self.object = new_val;
+        }
         Ok(&self.object)
     }
 
@@ -549,6 +548,20 @@ pub trait TransactionalStorageProtocol<T, Id: Copy>: Send + Sync {
     /// Read the latest version of the object and return it along with its version ID. If no
     /// object is found, returns `Ok(None)`
     async fn try_read_latest(&self) -> Result<Option<(Id, T)>, TransactionalObjectError>;
+
+    /// Read the latest version only if its ID differs from `current_id`. Returns `Ok(None)`
+    /// when durable storage still holds exactly `current_id`, i.e. the caller's copy is
+    /// already up to date (versions are immutable, so the same ID implies the same content).
+    /// Returns `InvalidObjectState` if no object exists at all, since a caller asserting it
+    /// holds a version of the object makes an empty store an invariant violation.
+    ///
+    /// Implementations that can discover the latest ID without fetching content (e.g. with
+    /// a LIST) should skip the content read when the ID is unchanged, which lets pollers
+    /// avoid re-fetching an unchanged object on every tick.
+    async fn try_read_latest_if_newer(
+        &self,
+        current_id: Id,
+    ) -> Result<Option<(Id, T)>, TransactionalObjectError>;
 }
 
 /// Extends TransactionalStorageProtocol<T, MonotonicId> by requiring that the protocol persist objects
