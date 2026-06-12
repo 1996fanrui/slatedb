@@ -2892,6 +2892,7 @@ mod tests {
             cache_storage,
             part_size,
             cache_puts_enabled,
+            Vec::new(),
             cache_stats.clone(),
         )
         .unwrap();

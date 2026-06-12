@@ -1361,6 +1361,13 @@ pub struct ObjectStoreCacheOptions {
     /// When the limit is reached, the least recently used handle is closed.
     /// Default is 1000.
     pub max_open_file_handles: usize,
+
+    /// File extensions that bypass the cache entirely (GET/HEAD/PUT go straight to
+    /// the object store and are never admitted to the cache). Defaults to the
+    /// versioned metadata files (`manifest`, `compactions`): every version is a new
+    /// immutable file that is only read while it is the latest, so caching them
+    /// pays a full cache write per version for a near-zero hit rate.
+    pub cache_exempt_extensions: Vec<String>,
 }
 
 impl Default for ObjectStoreCacheOptions {
@@ -1376,6 +1383,7 @@ impl Default for ObjectStoreCacheOptions {
             preload_disk_cache_on_startup: None,
             scan_interval: Some(Duration::from_secs(3600)),
             max_open_file_handles: 1000,
+            cache_exempt_extensions: vec!["manifest".to_string(), "compactions".to_string()],
         }
     }
 }

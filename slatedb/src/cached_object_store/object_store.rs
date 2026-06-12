@@ -29,6 +29,9 @@ pub(crate) struct CachedObjectStore {
     pub(crate) cache_storage: Arc<dyn LocalCacheStorage>,
     pub(crate) admission_picker: AdmissionPicker,
     pub(crate) cache_puts: bool,
+    // File extensions that bypass the cache entirely. See
+    // `ObjectStoreCacheOptions::cache_exempt_extensions`.
+    cache_exempt_extensions: Vec<String>,
     // Absolute path of the root folder relative to the bucket. See #1319.
     resolved_root: Arc<OnceCell<Path>>,
     stats: Arc<CachedObjectStoreStats>,
@@ -47,6 +50,7 @@ impl CachedObjectStore {
         cache_storage: Arc<dyn LocalCacheStorage>,
         part_size_bytes: usize,
         cache_puts: bool,
+        cache_exempt_extensions: Vec<String>,
         stats: Arc<CachedObjectStoreStats>,
     ) -> Result<Arc<Self>, SlateDBError> {
         if part_size_bytes == 0 || !part_size_bytes.is_multiple_of(1024) {
@@ -60,11 +64,21 @@ impl CachedObjectStore {
             stats,
             admission_picker: AdmissionPicker::default(),
             cache_puts,
+            cache_exempt_extensions,
             resolved_root: Arc::new(OnceCell::new()),
             head_flights: SingleFlight::new(),
             prefetch_flights: SingleFlight::new(),
             part_flights: SingleFlight::new(),
         }))
+    }
+
+    /// Returns true when the location's file extension is configured to bypass
+    /// the cache entirely (reads and writes go straight to the object store).
+    fn is_cache_exempt(&self, location: &Path) -> bool {
+        match location.extension() {
+            Some(ext) => self.cache_exempt_extensions.iter().any(|e| e == ext),
+            None => false,
+        }
     }
 
     pub(crate) async fn start_evictor(&self) {
@@ -100,6 +114,7 @@ impl CachedObjectStore {
             cache_storage,
             options.part_size_bytes,
             options.cache_puts,
+            options.cache_exempt_extensions.clone(),
             stats,
         )?;
         cached.start_evictor().await;
@@ -694,10 +709,16 @@ impl ObjectStore for CachedObjectStore {
         location: &Path,
         options: GetOptions,
     ) -> object_store::Result<GetResult> {
+        if self.is_cache_exempt(location) {
+            return self.object_store.get_opts(location, options).await;
+        }
         self.cached_get_opts(location, options).await
     }
 
     async fn head(&self, location: &Path) -> object_store::Result<ObjectMeta> {
+        if self.is_cache_exempt(location) {
+            return self.object_store.head(location).await;
+        }
         self.cached_head(location).await
     }
 
@@ -707,6 +728,9 @@ impl ObjectStore for CachedObjectStore {
         payload: PutPayload,
         opts: PutOptions,
     ) -> object_store::Result<PutResult> {
+        if self.is_cache_exempt(location) {
+            return self.object_store.put_opts(location, payload, opts).await;
+        }
         self.cached_put_opts(location, payload, opts).await
     }
 
@@ -925,6 +949,58 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn test_cache_exempt_extensions_bypass_cache() -> object_store::Result<()> {
+        let object_store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let recorder = MetricsRecorderHelper::noop();
+        let stats = Arc::new(CachedObjectStoreStats::new(&recorder));
+        let cache_storage = Arc::new(FsCacheStorage::new(
+            new_test_cache_folder(),
+            None,
+            None,
+            stats.clone(),
+            Arc::new(DefaultSystemClock::new()),
+            Arc::new(DbRand::default()),
+            1000,
+        ));
+        let cached_store = CachedObjectStore::new(
+            object_store.clone(),
+            cache_storage,
+            1024,
+            true,
+            vec!["manifest".to_string()],
+            stats,
+        )
+        .unwrap();
+        let payload = Bytes::from_static(b"some-bytes");
+
+        // Exempt extension: PUT + GET round-trip works and nothing is admitted
+        // to the cache, even with cache_puts enabled.
+        let exempt_path = Path::from("manifest/0001.manifest");
+        cached_store
+            .put(&exempt_path, PutPayload::from_bytes(payload.clone()))
+            .await?;
+        let got = cached_store.get(&exempt_path).await?.bytes().await?;
+        assert_eq!(got, payload);
+        let entry = cached_store
+            .cache_storage
+            .entry(&exempt_path, cached_store.part_size_bytes);
+        assert!(entry.read_head().await?.is_none());
+
+        // Non-exempt extension: GET populates the cache as usual.
+        let cached_path = Path::from("compacted/0001.sst");
+        cached_store
+            .put(&cached_path, PutPayload::from_bytes(payload.clone()))
+            .await?;
+        let got = cached_store.get(&cached_path).await?.bytes().await?;
+        assert_eq!(got, payload);
+        let entry = cached_store
+            .cache_storage
+            .entry(&cached_path, cached_store.part_size_bytes);
+        assert!(entry.read_head().await?.is_some());
+        Ok(())
+    }
+
     #[test]
     fn test_infer_root() {
         assert_eq!(
@@ -966,7 +1042,7 @@ mod tests {
             Path::from("tenant-a"),
         ));
         let cached_store =
-            CachedObjectStore::new(prefixed, cache_storage, 1024, false, stats).unwrap();
+            CachedObjectStore::new(prefixed, cache_storage, 1024, false, Vec::new(), stats).unwrap();
 
         let relative_location = Path::from("manifest/0001.manifest");
         let full_location = Path::from("tenant-a/manifest/0001.manifest");
@@ -1027,12 +1103,12 @@ mod tests {
             Path::from("db-b"),
         ));
 
-        let cached_a = CachedObjectStore::new(store_a, cache_storage.clone(), 1024, false, {
+        let cached_a = CachedObjectStore::new(store_a, cache_storage.clone(), 1024, false, Vec::new(), {
             let recorder = MetricsRecorderHelper::noop();
             Arc::new(CachedObjectStoreStats::new(&recorder))
         })
         .unwrap();
-        let cached_b = CachedObjectStore::new(store_b, cache_storage.clone(), 1024, false, {
+        let cached_b = CachedObjectStore::new(store_b, cache_storage.clone(), 1024, false, Vec::new(), {
             let recorder = MetricsRecorderHelper::noop();
             Arc::new(CachedObjectStoreStats::new(&recorder))
         })
@@ -1115,7 +1191,7 @@ mod tests {
             1000,
         ));
         let cached_store =
-            CachedObjectStore::new(bad_meta_store, cache_storage, 1024, false, stats).unwrap();
+            CachedObjectStore::new(bad_meta_store, cache_storage, 1024, false, Vec::new(), stats).unwrap();
 
         let location = Path::from("data/file.sst");
         let payload = Bytes::from_static(b"payload");
@@ -1164,7 +1240,7 @@ mod tests {
 
         let part_size = 1024;
         let cached_store =
-            CachedObjectStore::new(object_store.clone(), cache_storage, part_size, false, stats)
+            CachedObjectStore::new(object_store.clone(), cache_storage, part_size, false, Vec::new(), stats)
                 .unwrap();
         let entry = cached_store.cache_storage.entry(&location, 1024);
 
@@ -1242,7 +1318,7 @@ mod tests {
         ));
 
         let cached_store =
-            CachedObjectStore::new(object_store, cache_storage, part_size, false, stats).unwrap();
+            CachedObjectStore::new(object_store, cache_storage, part_size, false, Vec::new(), stats).unwrap();
         let entry = cached_store.cache_storage.entry(&location, part_size);
         let object_size_hint = cached_store.save_get_result(get_result).await?;
         assert_eq!(object_size_hint, 1024 * 3);
@@ -1288,7 +1364,7 @@ mod tests {
         ));
 
         let cached_store =
-            CachedObjectStore::new(object_store, cache_storage, 1024, false, stats).unwrap();
+            CachedObjectStore::new(object_store, cache_storage, 1024, false, Vec::new(), stats).unwrap();
 
         struct Test {
             input: (Option<GetRange>, usize),
@@ -1378,7 +1454,7 @@ mod tests {
             1000,
         ));
         let cached_store =
-            CachedObjectStore::new(object_store, cache_storage, 1024, false, stats).unwrap();
+            CachedObjectStore::new(object_store, cache_storage, 1024, false, Vec::new(), stats).unwrap();
 
         let aligned = cached_store.align_range(&(9..1025), 1024);
         assert_eq!(aligned, 0..2048);
@@ -1402,7 +1478,7 @@ mod tests {
             1000,
         ));
         let cached_store =
-            CachedObjectStore::new(object_store, cache_storage, 1024, false, stats).unwrap();
+            CachedObjectStore::new(object_store, cache_storage, 1024, false, Vec::new(), stats).unwrap();
 
         let aligned = cached_store.align_get_range(&GetRange::Bounded(9..1025));
         assert_eq!(aligned, GetRange::Bounded(0..2048));
@@ -1434,7 +1510,7 @@ mod tests {
             1000,
         ));
         let cached_store =
-            CachedObjectStore::new(object_store.clone(), cache_storage, 1024, false, stats)
+            CachedObjectStore::new(object_store.clone(), cache_storage, 1024, false, Vec::new(), stats)
                 .unwrap();
 
         let test_path = Path::from("/data/testdata1");
@@ -1519,7 +1595,7 @@ mod tests {
         let object_store = Arc::new(object_store::memory::InMemory::new());
 
         let cached_store =
-            CachedObjectStore::new(object_store.clone(), cache_storage, 1024, true, stats).unwrap();
+            CachedObjectStore::new(object_store.clone(), cache_storage, 1024, true, Vec::new(), stats).unwrap();
 
         // Create some test files to preload
         let test_paths = vec![
@@ -1570,7 +1646,7 @@ mod tests {
         let object_store = Arc::new(object_store::memory::InMemory::new());
 
         let cached_store =
-            CachedObjectStore::new(object_store.clone(), cache_storage, 1024, true, stats).unwrap();
+            CachedObjectStore::new(object_store.clone(), cache_storage, 1024, true, Vec::new(), stats).unwrap();
 
         // Create some test files
         let test_paths = vec![Path::from("file1.sst"), Path::from("file2.sst")];
@@ -1637,6 +1713,7 @@ mod tests {
             cache_storage,
             1024,
             false,
+            Vec::new(),
             stats,
         )
         .unwrap();
