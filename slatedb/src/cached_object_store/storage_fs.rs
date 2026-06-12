@@ -265,7 +265,13 @@ impl FsCacheEntry {
                 .open(tmp_path)
                 .map_err(wrap_io_err)?;
             file.write_all(&buf).map_err(wrap_io_err)?;
-            file.sync_all().map_err(wrap_io_err)?;
+            // No fsync here on purpose: cache files are rebuildable replicas of
+            // objects whose authoritative copy lives in the object store, so they
+            // need no durability guarantee. OS writeback persists them eventually;
+            // a file torn by a power loss fails loudly at read time (short reads
+            // and SST block checksums), which costs one re-fetch. Syncing every
+            // cache write serializes concurrent writers on the filesystem journal
+            // and dominates foreground GET/PUT latency.
             std::fs::rename(tmp_path, path).map_err(wrap_io_err)
         })
         .await?
