@@ -30,6 +30,7 @@ pub const SORTED_RUN_COUNT: &str = db_stat_name!("sorted_run_count");
 pub const SST_VIEW_COUNT: &str = db_stat_name!("sst_view_count");
 pub const SST_COUNT: &str = db_stat_name!("sst_count");
 pub const EXTERNAL_DB_COUNT: &str = db_stat_name!("external_db_count");
+pub const VERSION_COUNT: &str = db_stat_name!("version_count");
 pub const L0_FLUSH_BYTES: &str = db_stat_name!("l0_flush_bytes");
 pub const SST_FILTER_FALSE_POSITIVE_COUNT: &str = db_stat_name!("sst_filter_false_positive_count");
 pub const SST_FILTER_POSITIVE_COUNT: &str = db_stat_name!("sst_filter_positive_count");

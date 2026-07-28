@@ -4,6 +4,7 @@ use crate::{
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use log::error;
+use slatedb_common::metrics::GaugeFn;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -17,6 +18,7 @@ pub(crate) struct ManifestGcTask {
     manifest_options: GarbageCollectorDirectoryOptions,
     gc_filter: Option<Arc<dyn GcFilter>>,
     boundary_files_enabled: bool,
+    version_count: Arc<dyn GaugeFn>,
 }
 
 impl std::fmt::Debug for ManifestGcTask {
@@ -35,6 +37,7 @@ impl ManifestGcTask {
         manifest_options: GarbageCollectorDirectoryOptions,
         gc_filter: Option<Arc<dyn GcFilter>>,
         boundary_files_enabled: bool,
+        version_count: Arc<dyn GaugeFn>,
     ) -> Self {
         ManifestGcTask {
             manifest_store,
@@ -42,6 +45,7 @@ impl ManifestGcTask {
             manifest_options,
             gc_filter,
             boundary_files_enabled,
+            version_count,
         }
     }
 
@@ -103,6 +107,8 @@ impl GcTask for ManifestGcTask {
             .collect();
 
         // Delete manifests older than min_age
+        // Capture length before into_iter() consumes the list; +1 re-adds the popped latest.
+        let pre_gc_count = manifest_metadata_list.len() as u64 + 1;
         let manifests_to_delete = manifest_metadata_list
             .into_iter()
             .filter(|manifest_metadata| {
@@ -131,6 +137,9 @@ impl GcTask for ManifestGcTask {
             .map(|manifest_metadata| manifest_metadata.id)
             .collect::<Vec<_>>();
 
+        self.version_count
+            .set((pre_gc_count - manifest_ids_to_delete.len() as u64) as i64);
+
         self.maybe_delete_manifests(manifest_ids_to_delete).await;
 
         Ok(())
@@ -152,7 +161,8 @@ mod tests {
     use chrono::TimeDelta;
     use object_store::{memory::InMemory, path::Path, ObjectStoreExt};
     use slatedb_common::clock::DefaultSystemClock;
-    use slatedb_common::metrics::MetricsRecorderHelper;
+    use slatedb_common::metrics::{DefaultMetricsRecorder, MetricsRecorderHelper};
+    use slatedb_common::metrics::lookup_metric;
     use slatedb_common::ObjectMetadata;
     use std::time::Duration;
 
@@ -189,6 +199,7 @@ mod tests {
             .unwrap();
 
         let recorder = MetricsRecorderHelper::noop();
+        let version_count = recorder.gauge(crate::db_stats::VERSION_COUNT).register();
         let task = ManifestGcTask::new(
             manifest_store.clone(),
             Arc::new(GcStats::new(&recorder)),
@@ -199,6 +210,7 @@ mod tests {
             },
             None,
             true,
+            version_count,
         );
         task.collect(Utc::now() + TimeDelta::hours(1))
             .await
@@ -247,6 +259,7 @@ mod tests {
             .unwrap();
 
         let recorder = MetricsRecorderHelper::noop();
+        let version_count = recorder.gauge(crate::db_stats::VERSION_COUNT).register();
         let task = ManifestGcTask::new(
             manifest_store.clone(),
             Arc::new(GcStats::new(&recorder)),
@@ -257,6 +270,7 @@ mod tests {
             },
             None,
             false,
+            version_count,
         );
         task.collect(Utc::now() + TimeDelta::hours(1))
             .await
@@ -302,6 +316,7 @@ mod tests {
             .unwrap();
 
         let recorder = MetricsRecorderHelper::noop();
+        let version_count = recorder.gauge(crate::db_stats::VERSION_COUNT).register();
         let task = ManifestGcTask::new(
             manifest_store.clone(),
             Arc::new(GcStats::new(&recorder)),
@@ -312,6 +327,7 @@ mod tests {
             },
             Some(Arc::new(DenyAllGcFilter) as Arc<dyn GcFilter>),
             true,
+            version_count,
         );
         task.collect(Utc::now() + TimeDelta::hours(1))
             .await
@@ -328,5 +344,83 @@ mod tests {
 
         assert!(manifest_store.try_read_manifest(1).await.unwrap().is_some());
         assert!(manifest_store.try_read_manifest(2).await.unwrap().is_some());
+    }
+
+    async fn make_manifest_store() -> (Arc<ManifestStore>, StoredManifest) {
+        let object_store = Arc::new(InMemory::new());
+        let manifest_store = Arc::new(ManifestStore::new(&Path::from("/root"), object_store));
+        let stored = StoredManifest::create_new_db(
+            manifest_store.clone(),
+            ManifestCore::new(),
+            Arc::new(DefaultSystemClock::new()),
+        )
+        .await
+        .unwrap();
+        (manifest_store, stored)
+    }
+
+    #[tokio::test]
+    async fn test_version_count_after_gc_deletes_old_manifests() {
+        let (manifest_store, mut stored) = make_manifest_store().await;
+        // Write two more manifests: ids 1 (create), 2, 3
+        stored.update(stored.prepare_dirty().unwrap()).await.unwrap();
+        stored.update(stored.prepare_dirty().unwrap()).await.unwrap();
+
+        let metrics = Arc::new(DefaultMetricsRecorder::new());
+        let recorder = MetricsRecorderHelper::new(metrics.clone(), Default::default());
+        let version_count = recorder.gauge(crate::db_stats::VERSION_COUNT).register();
+        let task = ManifestGcTask::new(
+            manifest_store.clone(),
+            Arc::new(GcStats::new(&recorder)),
+            GarbageCollectorDirectoryOptions {
+                min_age: Duration::ZERO,
+                interval: None,
+                dry_run: false,
+            },
+            None,
+            true,
+            version_count,
+        );
+
+        task.collect(Utc::now() + TimeDelta::hours(1)).await.unwrap();
+
+        // GC deletes manifests 1 and 2 (older than min_age=0); manifest 3 survives as latest.
+        assert_eq!(
+            lookup_metric(&metrics, crate::db_stats::VERSION_COUNT),
+            Some(1),
+            "expected 1 surviving manifest after GC"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_version_count_when_nothing_to_delete() {
+        let (manifest_store, mut stored) = make_manifest_store().await;
+        stored.update(stored.prepare_dirty().unwrap()).await.unwrap();
+        stored.update(stored.prepare_dirty().unwrap()).await.unwrap();
+
+        let metrics = Arc::new(DefaultMetricsRecorder::new());
+        let recorder = MetricsRecorderHelper::new(metrics.clone(), Default::default());
+        let version_count = recorder.gauge(crate::db_stats::VERSION_COUNT).register();
+        let task = ManifestGcTask::new(
+            manifest_store.clone(),
+            Arc::new(GcStats::new(&recorder)),
+            GarbageCollectorDirectoryOptions {
+                min_age: Duration::from_secs(3600), // too new to delete
+                interval: None,
+                dry_run: false,
+            },
+            None,
+            true,
+            version_count,
+        );
+
+        task.collect(Utc::now()).await.unwrap();
+
+        // Nothing deleted — all 3 manifests survive.
+        assert_eq!(
+            lookup_metric(&metrics, crate::db_stats::VERSION_COUNT),
+            Some(3),
+            "expected all 3 manifests when nothing qualifies for deletion"
+        );
     }
 }

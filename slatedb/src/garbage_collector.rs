@@ -34,7 +34,7 @@ use log::{error, info};
 use manifest_gc::ManifestGcTask;
 use object_store::ObjectStore;
 use slatedb_common::clock::SystemClock;
-use slatedb_common::metrics::MetricsRecorderHelper;
+use slatedb_common::metrics::{GaugeFn, MetricsRecorderHelper};
 use slatedb_txn_obj::{DirtyObject, SimpleTransactionalObject, TransactionalObject};
 use std::sync::Arc;
 use std::time::Duration;
@@ -281,6 +281,8 @@ impl GarbageCollector {
                 options.boundary_files_enabled,
             )
         });
+        let version_count: Arc<dyn GaugeFn> =
+            recorder.gauge(crate::db_stats::VERSION_COUNT).register();
         let manifest_gc_task = options.manifest_options.map(|manifest_options| {
             ManifestGcTask::new(
                 manifest_store.clone(),
@@ -288,6 +290,7 @@ impl GarbageCollector {
                 manifest_options,
                 gc_filter.clone(),
                 options.boundary_files_enabled,
+                version_count,
             )
         });
         let detach_gc_task = options.detach_options.map(|detach_options| {
