@@ -308,6 +308,53 @@ impl DbInner {
         Ok((write_handle, durable_watcher))
     }
 
+    // EXPERIMENT: synchronous single-writer fast path. Runs the whole write inline on
+    // the calling thread instead of `write_notifier.send(..) + rx.await`, eliminating the
+    // cross-thread round-trip + park/wake that dominates per-record latency for Flink's
+    // single-threaded keyed-state writes. Only valid when the WAL is disabled and the caller does
+    // not require durability (`await_durable=false`): no WAL append, no transaction/segment
+    // support. Safe here because Flink serializes all writes on one thread, so there is no
+    // concurrent writer to contend with the db_state lock (the starvation concern that motivated
+    // the centralized writer loop does not apply). Mirrors the no-WAL branch of `write_batch`.
+    pub(crate) async fn write_batch_local(&self, batch: WriteBatch) -> Result<WriteHandle, SlateDBError> {
+        assert!(!self.wal_enabled, "write_batch_local requires wal disabled");
+        let now = self.mono_clock.now().await?;
+        let commit_seq = self.oracle.next_seq();
+
+        // Pure in-memory extraction; the iterator's `.await`s never suspend for a batch of puts.
+        let (entries, touched_segments, entries_size) = batch
+            .extract_entries(
+                commit_seq,
+                now,
+                self.settings.default_ttl,
+                self.flush_merge_operator.clone(),
+                self.segment_extractor.as_deref(),
+            )
+            .await?;
+
+        self.write_entries_to_memtable(entries, touched_segments);
+        self.db_stats.memtable_write_bytes.increment(entries_size);
+
+        let write_keys = batch.keys();
+        self.txn_manager
+            .track_recent_committed_write_batch(&write_keys, commit_seq);
+        self.record_memtable_sequence(commit_seq);
+
+        // WAL disabled => no wal flushes => replay point is a constant; freeze on size only.
+        let mut guard = self.state.write();
+        let meta = guard.memtable().metadata();
+        let l0_sst_size_est = self
+            .table_store
+            .estimate_encoded_size_compacted(meta.entry_num, meta.entries_size_in_bytes);
+        if l0_sst_size_est >= self.settings.l0_sst_size_bytes {
+            let replay_after_wal_id = guard.state().core().replay_after_wal_id;
+            self.freeze_current_memtable_with_state_guard(&mut guard, replay_after_wal_id);
+        }
+        drop(guard);
+
+        Ok(WriteHandle::new(commit_seq, now))
+    }
+
     fn maybe_freeze_current_memtable(
         &self,
         wal_buffer: &WalBufferManager,

@@ -1421,6 +1421,36 @@ impl Db {
         self.write_with_options(batch, write_opts).await
     }
 
+    /// EXPERIMENT: synchronous single-writer fast path. Writes the value inline on the
+    /// calling task instead of dispatching to the batch-writer event loop and awaiting a oneshot,
+    /// eliminating the per-record cross-thread round-trip. Only valid with WAL disabled and no
+    /// durability requirement; intended for Flink's single-threaded keyed-state writes. See
+    /// `DbInner::write_batch_local`.
+    pub async fn put_local<K, V>(&self, key: K, value: V) -> Result<WriteHandle, crate::Error>
+    where
+        K: AsRef<[u8]>,
+        V: AsRef<[u8]>,
+    {
+        let mut batch = WriteBatch::new();
+        batch.put_with_options(key, value, &PutOptions::default());
+        Ok(self.inner.write_batch_local(batch).await?)
+    }
+
+    /// EXPERIMENT: merge counterpart of [`Db::put_local`]. Same fast path; this is the
+    /// operation a list-style state store actually uses.
+    pub async fn merge_local<K, V>(&self, key: K, value: V) -> Result<WriteHandle, crate::Error>
+    where
+        K: AsRef<[u8]>,
+        V: AsRef<[u8]>,
+    {
+        if self.inner.flush_merge_operator.is_none() {
+            return Err(SlateDBError::MergeOperatorMissing.into());
+        }
+        let mut batch = WriteBatch::new();
+        batch.merge_with_options(key, value, &MergeOptions::default());
+        Ok(self.inner.write_batch_local(batch).await?)
+    }
+
     /// Write a value into the database using owned [`Bytes`], avoiding the
     /// copies that [`Db::put`] performs via `Bytes::copy_from_slice`. Prefer
     /// this form when the caller already holds the data as [`Bytes`] (e.g.
