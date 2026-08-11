@@ -16,6 +16,8 @@
     "slatedb.d.ts",
     "slatedb-ffi.js",
     "slatedb-ffi.d.ts",
+    "metrics.mjs",
+    "metrics.d.mts",
     "runtime/",
     "prebuilds/"
   ],
@@ -23,6 +25,10 @@
     ".": {
       "types": "./index.d.ts",
       "import": "./index.js"
+    },
+    "./metrics": {
+      "types": "./metrics.d.mts",
+      "import": "./metrics.mjs"
     }
   },
   "repository": {

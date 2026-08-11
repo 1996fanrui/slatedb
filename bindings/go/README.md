@@ -96,6 +96,9 @@ func main() {
 The Go binding exposes both custom metrics callbacks and the built-in
 `DefaultMetricsRecorder`:
 
+- `DbBuilder.WithDefaultMetricsRecorder(...)` and
+  `DbReaderBuilder.WithDefaultMetricsRecorder(...)` attach the built-in recorder
+  as a Rust object, so metric updates never call back into Go
 - `DbBuilder.WithMetricsRecorder(...)`
 - `DbReaderBuilder.WithMetricsRecorder(...)`
 - `NewDefaultMetricsRecorder()`

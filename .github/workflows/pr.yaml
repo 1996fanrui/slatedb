@@ -282,6 +282,8 @@ jobs:
           tar -tf "${TARBALL}" | grep -Fx 'package/slatedb.d.ts'
           tar -tf "${TARBALL}" | grep -Fx 'package/slatedb-ffi.js'
           tar -tf "${TARBALL}" | grep -Fx 'package/slatedb-ffi.d.ts'
+          tar -tf "${TARBALL}" | grep -Fx 'package/metrics.mjs'
+          tar -tf "${TARBALL}" | grep -Fx 'package/metrics.d.mts'
           tar -tf "${TARBALL}" | grep -Fx 'package/runtime/ffi-types.js'
           tar -tf "${TARBALL}" | grep -Fx 'package/prebuilds/linux-x64-gnu/libslatedb_uniffi.so'
 

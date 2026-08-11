@@ -142,6 +142,17 @@ pub struct DefaultMetricsRecorder {
     inner: Arc<core_metrics::DefaultMetricsRecorder>,
 }
 
+impl DefaultMetricsRecorder {
+    /// Returns the wrapped core recorder.
+    ///
+    /// Builders use this to attach the recorder as a Rust object, so metric
+    /// registration and updates never cross the FFI boundary back into the
+    /// foreign language.
+    pub(crate) fn core_recorder(&self) -> Arc<dyn core_metrics::MetricsRecorder> {
+        self.inner.clone()
+    }
+}
+
 #[uniffi::export]
 impl DefaultMetricsRecorder {
     /// Creates an empty default metrics recorder.
@@ -693,7 +704,7 @@ mod tests {
         );
 
         builder
-            .with_metrics_recorder(recorder.clone())
+            .with_default_metrics_recorder(recorder.clone())
             .expect("failed to attach recorder");
 
         let db = builder.build().await.expect("failed to build db");
@@ -749,7 +760,7 @@ mod tests {
         let builder = DbReaderBuilder::new(path.to_owned(), binding_store);
 
         builder
-            .with_metrics_recorder(recorder.clone())
+            .with_default_metrics_recorder(recorder.clone())
             .expect("failed to attach recorder");
 
         let reader = builder.build().await.expect("failed to build reader");

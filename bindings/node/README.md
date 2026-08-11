@@ -75,35 +75,52 @@ Replace `memory:///` with any object store URL supported by Rust's [`object_stor
 
 ## Metrics
 
-The Node binding exposes both application-provided metrics recorders and the built-in
-`DefaultMetricsRecorder`:
+Metrics are collected by pulling, not by pushing: keep the built-in
+`DefaultMetricsRecorder` on the Rust side, attach it with
+`with_default_metrics_recorder(...)`, and read values out of it from JavaScript
+whenever you want to export them.
 
-- `DbBuilder.with_metrics_recorder(...)`
-- `DbReaderBuilder.with_metrics_recorder(...)`
+- `DbBuilder.with_default_metrics_recorder(...)`
+- `DbReaderBuilder.with_default_metrics_recorder(...)`
 - `DefaultMetricsRecorder.snapshot()`
 - `DefaultMetricsRecorder.metrics_by_name(...)`
 - `DefaultMetricsRecorder.metric_by_name_and_labels(...)`
 
-Example:
+`@slatedb/uniffi/metrics` adds the polling loop and reshapes snapshot records
+into plain objects (`{ name, labels, description, type, value }`, integers as
+`BigInt`):
+
+- `pollMetrics(recorder, options)` polls on an interval and returns `{ poll(), stop() }`
+- `snapshotMetrics(recorder)` takes one normalized snapshot
+- `normalizeSnapshot(metrics)` / `normalizeMetric(metric)` normalize records you already have
 
 ```js
 import { DbBuilder, DefaultMetricsRecorder, ObjectStore } from "@slatedb/uniffi";
+import { pollMetrics } from "@slatedb/uniffi/metrics";
 
 const store = ObjectStore.resolve("memory:///");
 const recorder = new DefaultMetricsRecorder();
 const builder = new DbBuilder("metrics-demo", store);
 
 try {
-  builder.with_metrics_recorder(recorder);
+  builder.with_default_metrics_recorder(recorder);
   const db = await builder.build();
+  const poller = pollMetrics(recorder, {
+    intervalMs: 10_000,
+    onSnapshot(metrics) {
+      for (const metric of metrics) {
+        console.log(metric.name, metric.labels, metric.type, metric.value);
+      }
+    },
+    onError(error) {
+      console.error("metrics polling stopped", error);
+    },
+  });
+
   try {
     await db.put(Buffer.from("hello"), Buffer.from("world"));
-
-    const metric = recorder.metric_by_name_and_labels("slatedb.db.write_ops", []);
-    if (metric?.value.tag === "Counter") {
-      console.log(metric.value[""]);
-    }
   } finally {
+    poller.stop();
     await db.shutdown();
     db.dispose();
   }
@@ -113,6 +130,24 @@ try {
   store.dispose();
 }
 ```
+
+Stop the poller before disposing the recorder. The interval timer is unref'd, so
+it never keeps the process alive on its own.
+
+### Why not a JavaScript recorder?
+
+`with_metrics_recorder(...)` accepts any object implementing the
+`MetricsRecorder` interface, but implementing one in JavaScript is not
+recommended. SlateDB registers and updates metrics from its own background
+threads, so each call becomes a synchronous cross-thread call into the Node
+event loop. That is far more expensive than polling, and it can deadlock: if the
+event loop is waiting on a SlateDB operation while SlateDB is waiting for the
+event loop to service a metric update, neither side makes progress (see
+[#2004](https://github.com/slatedb/slatedb/issues/2004)).
+
+`with_default_metrics_recorder(...)` avoids this entirely — the recorder is
+attached as a Rust object, so no metric registration or update crosses back into
+JavaScript.
 
 ## Local Development
 
@@ -151,7 +186,7 @@ This command:
 3. copies the generated package files into `bindings/node`
 4. stages the host native library under `bindings/node/prebuilds/<target>/`
 
-Generated API files are written into `bindings/node` and are not committed. `package.json`, `build.mjs`, and this `README.md` are maintained by hand.
+Generated API files are written into `bindings/node` and are not committed. `package.json`, `build.mjs`, `metrics.mjs`, `metrics.d.mts`, and this `README.md` are maintained by hand.
 
 ### Run Tests
 
@@ -183,6 +218,8 @@ tar -tf "${TARBALL}" | grep -Fx 'package/slatedb.js'
 tar -tf "${TARBALL}" | grep -Fx 'package/slatedb.d.ts'
 tar -tf "${TARBALL}" | grep -Fx 'package/slatedb-ffi.js'
 tar -tf "${TARBALL}" | grep -Fx 'package/slatedb-ffi.d.ts'
+tar -tf "${TARBALL}" | grep -Fx 'package/metrics.mjs'
+tar -tf "${TARBALL}" | grep -Fx 'package/metrics.d.mts'
 tar -tf "${TARBALL}" | grep -Fx 'package/runtime/ffi-types.js'
 tar -tf "${TARBALL}" | grep -Fx 'package/prebuilds/linux-x64-gnu/libslatedb_uniffi.so'
 ```

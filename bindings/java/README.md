@@ -47,6 +47,7 @@ Maven:
 - `ObjectStore.resolve(...)` resolves an object store from a URL such as `memory:///` or `file:///...`
 - `DbBuilder` opens a writable database and `DbReaderBuilder` opens a read-only reader
 - `DbBuilder.withMetricsRecorder(...)` and `DbReaderBuilder.withMetricsRecorder(...)` install a custom metrics sink
+- `DbBuilder.withDefaultMetricsRecorder(...)` and `DbReaderBuilder.withDefaultMetricsRecorder(...)` attach the built-in recorder without routing metric updates through Java
 - `DefaultMetricsRecorder` provides an in-process recorder with snapshot and lookup helpers
 - most database operations return `CompletableFuture`
 - native-backed handles implement `AutoCloseable` and should be closed
@@ -68,7 +69,7 @@ import io.slatedb.uniffi.ObjectStore;
 try (ObjectStore store = ObjectStore.resolve("memory:///");
         DefaultMetricsRecorder recorder = new DefaultMetricsRecorder();
         DbBuilder builder = new DbBuilder("metrics-demo", store)) {
-    builder.withMetricsRecorder(recorder);
+    builder.withDefaultMetricsRecorder(recorder);
 
     Db db = await(builder.build());
     try (db) {

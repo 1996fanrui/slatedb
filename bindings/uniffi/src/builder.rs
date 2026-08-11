@@ -10,7 +10,7 @@ use crate::filter_policy::{
     adapt_prefix_extractor, collect_filter_policies, FilterPolicy, PrefixExtractor,
 };
 use crate::merge_operator::{adapt_merge_operator, MergeOperator};
-use crate::metrics::adapt_metrics_recorder;
+use crate::metrics::{adapt_metrics_recorder, DefaultMetricsRecorder};
 use crate::object_store::ObjectStore;
 use crate::runtime;
 use crate::settings::Settings;
@@ -100,6 +100,12 @@ impl DbBuilder {
     }
 
     /// Installs an application-defined metrics recorder.
+    ///
+    /// SlateDB registers and updates metrics from its own background threads,
+    /// so every call lands on a foreign recorder synchronously, off the thread
+    /// that opened the database. Prefer
+    /// [`DbBuilder::with_default_metrics_recorder`] when the host language
+    /// cannot service such calls freely.
     pub fn with_metrics_recorder(
         &self,
         metrics_recorder: Arc<dyn MetricsRecorder>,
@@ -108,6 +114,20 @@ impl DbBuilder {
             builder.with_metrics_recorder(adapt_metrics_recorder(metrics_recorder))
         })
         .map_err(Into::into)
+    }
+
+    /// Installs the built-in [`DefaultMetricsRecorder`].
+    ///
+    /// The recorder is attached as a Rust object, so neither registering a
+    /// metric nor updating one calls back into the host language. Read values
+    /// out of the same recorder with `DefaultMetricsRecorder::snapshot`.
+    pub fn with_default_metrics_recorder(
+        &self,
+        metrics_recorder: Arc<DefaultMetricsRecorder>,
+    ) -> Result<(), Error> {
+        let recorder = metrics_recorder.core_recorder();
+        self.update_builder(|builder| builder.with_metrics_recorder(recorder))
+            .map_err(Into::into)
     }
 
     /// Sets the filter policies used for SST filter construction and evaluation.
@@ -212,6 +232,12 @@ impl DbReaderBuilder {
     }
 
     /// Installs an application-defined metrics recorder.
+    ///
+    /// SlateDB registers and updates metrics from its own background threads,
+    /// so every call lands on a foreign recorder synchronously, off the thread
+    /// that opened the reader. Prefer
+    /// [`DbReaderBuilder::with_default_metrics_recorder`] when the host
+    /// language cannot service such calls freely.
     pub fn with_metrics_recorder(
         &self,
         metrics_recorder: Arc<dyn MetricsRecorder>,
@@ -220,6 +246,20 @@ impl DbReaderBuilder {
             builder.with_metrics_recorder(adapt_metrics_recorder(metrics_recorder))
         })
         .map_err(Into::into)
+    }
+
+    /// Installs the built-in [`DefaultMetricsRecorder`].
+    ///
+    /// The recorder is attached as a Rust object, so neither registering a
+    /// metric nor updating one calls back into the host language. Read values
+    /// out of the same recorder with `DefaultMetricsRecorder::snapshot`.
+    pub fn with_default_metrics_recorder(
+        &self,
+        metrics_recorder: Arc<DefaultMetricsRecorder>,
+    ) -> Result<(), Error> {
+        let recorder = metrics_recorder.core_recorder();
+        self.update_builder(|builder| builder.with_metrics_recorder(recorder))
+            .map_err(Into::into)
     }
 
     /// Sets the filter policies used when decoding SST filter blocks.

@@ -76,8 +76,12 @@ asyncio.run(main())
 The Python binding exposes both custom metrics callbacks and the built-in
 `DefaultMetricsRecorder`:
 
-- `DbBuilder.with_metrics_recorder(...)`
-- `DbReaderBuilder.with_metrics_recorder(...)`
+- `DbBuilder.with_default_metrics_recorder(...)` and
+  `DbReaderBuilder.with_default_metrics_recorder(...)` attach the built-in
+  recorder as a Rust object, so metric updates never call back into Python
+- `DbBuilder.with_metrics_recorder(...)` and
+  `DbReaderBuilder.with_metrics_recorder(...)` install a custom recorder, which
+  SlateDB calls from its background threads
 - `DefaultMetricsRecorder.snapshot()`
 - `DefaultMetricsRecorder.metrics_by_name(...)`
 - `DefaultMetricsRecorder.metric_by_name_and_labels(...)`
@@ -91,7 +95,7 @@ store = ObjectStore.resolve("memory:///")
 recorder = DefaultMetricsRecorder()
 builder = DbBuilder("metrics-demo", store)
 
-builder.with_metrics_recorder(recorder)
+builder.with_default_metrics_recorder(recorder)
 db = await builder.build()
 
 try:

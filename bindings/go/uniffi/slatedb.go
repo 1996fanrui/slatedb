@@ -644,6 +644,15 @@ func uniffiCheckChecksums() {
 	}
 	{
 		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_slatedb_uniffi_checksum_method_dbbuilder_with_default_metrics_recorder()
+		})
+		if checksum != 40568 {
+			// If this happens try cleaning and rebuilding your project
+			panic("slatedb: uniffi_slatedb_uniffi_checksum_method_dbbuilder_with_default_metrics_recorder: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
 			return C.uniffi_slatedb_uniffi_checksum_method_dbbuilder_with_filter_policies()
 		})
 		if checksum != 9193 {
@@ -664,7 +673,7 @@ func uniffiCheckChecksums() {
 		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
 			return C.uniffi_slatedb_uniffi_checksum_method_dbbuilder_with_metrics_recorder()
 		})
-		if checksum != 18128 {
+		if checksum != 44012 {
 			// If this happens try cleaning and rebuilding your project
 			panic("slatedb: uniffi_slatedb_uniffi_checksum_method_dbbuilder_with_metrics_recorder: UniFFI API checksum mismatch")
 		}
@@ -725,6 +734,15 @@ func uniffiCheckChecksums() {
 	}
 	{
 		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_slatedb_uniffi_checksum_method_dbreaderbuilder_with_default_metrics_recorder()
+		})
+		if checksum != 1694 {
+			// If this happens try cleaning and rebuilding your project
+			panic("slatedb: uniffi_slatedb_uniffi_checksum_method_dbreaderbuilder_with_default_metrics_recorder: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
 			return C.uniffi_slatedb_uniffi_checksum_method_dbreaderbuilder_with_filter_policies()
 		})
 		if checksum != 12871 {
@@ -745,7 +763,7 @@ func uniffiCheckChecksums() {
 		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
 			return C.uniffi_slatedb_uniffi_checksum_method_dbreaderbuilder_with_metrics_recorder()
 		})
-		if checksum != 20032 {
+		if checksum != 15425 {
 			// If this happens try cleaning and rebuilding your project
 			panic("slatedb: uniffi_slatedb_uniffi_checksum_method_dbreaderbuilder_with_metrics_recorder: UniFFI API checksum mismatch")
 		}
@@ -4274,6 +4292,12 @@ type DbBuilderInterface interface {
 	WithDbCache(dbCache *DbCache) error
 	// Disables the SST block and metadata cache.
 	WithDbCacheDisabled() error
+	// Installs the built-in [`DefaultMetricsRecorder`].
+	//
+	// The recorder is attached as a Rust object, so neither registering a
+	// metric nor updating one calls back into the host language. Read values
+	// out of the same recorder with `DefaultMetricsRecorder::snapshot`.
+	WithDefaultMetricsRecorder(metricsRecorder *DefaultMetricsRecorder) error
 	// Sets the filter policies used for SST filter construction and evaluation.
 	//
 	// Pass an empty vec to disable filters entirely. When unset, the default
@@ -4282,6 +4306,12 @@ type DbBuilderInterface interface {
 	// Installs an application-defined merge operator.
 	WithMergeOperator(mergeOperator MergeOperator) error
 	// Installs an application-defined metrics recorder.
+	//
+	// SlateDB registers and updates metrics from its own background threads,
+	// so every call lands on a foreign recorder synchronously, off the thread
+	// that opened the database. Prefer
+	// [`DbBuilder::with_default_metrics_recorder`] when the host language
+	// cannot service such calls freely.
 	WithMetricsRecorder(metricsRecorder MetricsRecorder) error
 	// Sets the seed used for SlateDB's internal random number generation.
 	WithSeed(seed uint64) error
@@ -4373,6 +4403,22 @@ func (_self *DbBuilder) WithDbCacheDisabled() error {
 	return _uniffiErr.AsError()
 }
 
+// Installs the built-in [`DefaultMetricsRecorder`].
+//
+// The recorder is attached as a Rust object, so neither registering a
+// metric nor updating one calls back into the host language. Read values
+// out of the same recorder with `DefaultMetricsRecorder::snapshot`.
+func (_self *DbBuilder) WithDefaultMetricsRecorder(metricsRecorder *DefaultMetricsRecorder) error {
+	_pointer := _self.ffiObject.incrementPointer("*DbBuilder")
+	defer _self.ffiObject.decrementPointer()
+	_, _uniffiErr := rustCallWithError[*Error](FfiConverterError{}, func(_uniffiStatus *C.RustCallStatus) bool {
+		C.uniffi_slatedb_uniffi_fn_method_dbbuilder_with_default_metrics_recorder(
+			_pointer, FfiConverterDefaultMetricsRecorderINSTANCE.Lower(metricsRecorder), _uniffiStatus)
+		return false
+	})
+	return _uniffiErr.AsError()
+}
+
 // Sets the filter policies used for SST filter construction and evaluation.
 //
 // Pass an empty vec to disable filters entirely. When unset, the default
@@ -4401,6 +4447,12 @@ func (_self *DbBuilder) WithMergeOperator(mergeOperator MergeOperator) error {
 }
 
 // Installs an application-defined metrics recorder.
+//
+// SlateDB registers and updates metrics from its own background threads,
+// so every call lands on a foreign recorder synchronously, off the thread
+// that opened the database. Prefer
+// [`DbBuilder::with_default_metrics_recorder`] when the host language
+// cannot service such calls freely.
 func (_self *DbBuilder) WithMetricsRecorder(metricsRecorder MetricsRecorder) error {
 	_pointer := _self.ffiObject.incrementPointer("*DbBuilder")
 	defer _self.ffiObject.decrementPointer()
@@ -5323,6 +5375,12 @@ func (_ FfiDestroyerDbReader) Destroy(value *DbReader) {
 type DbReaderBuilderInterface interface {
 	// Opens the reader and consumes this builder.
 	Build() (*DbReader, error)
+	// Installs the built-in [`DefaultMetricsRecorder`].
+	//
+	// The recorder is attached as a Rust object, so neither registering a
+	// metric nor updating one calls back into the host language. Read values
+	// out of the same recorder with `DefaultMetricsRecorder::snapshot`.
+	WithDefaultMetricsRecorder(metricsRecorder *DefaultMetricsRecorder) error
 	// Sets the filter policies used when decoding SST filter blocks.
 	//
 	// Must match (or be a superset of) the writer's policies so SST filter
@@ -5332,6 +5390,12 @@ type DbReaderBuilderInterface interface {
 	// Installs an application-defined merge operator used while reading merge rows.
 	WithMergeOperator(mergeOperator MergeOperator) error
 	// Installs an application-defined metrics recorder.
+	//
+	// SlateDB registers and updates metrics from its own background threads,
+	// so every call lands on a foreign recorder synchronously, off the thread
+	// that opened the reader. Prefer
+	// [`DbReaderBuilder::with_default_metrics_recorder`] when the host
+	// language cannot service such calls freely.
 	WithMetricsRecorder(metricsRecorder MetricsRecorder) error
 	// Applies custom reader options.
 	WithOptions(options ReaderOptions) error
@@ -5393,6 +5457,22 @@ func (_self *DbReaderBuilder) Build() (*DbReader, error) {
 	return res, err
 }
 
+// Installs the built-in [`DefaultMetricsRecorder`].
+//
+// The recorder is attached as a Rust object, so neither registering a
+// metric nor updating one calls back into the host language. Read values
+// out of the same recorder with `DefaultMetricsRecorder::snapshot`.
+func (_self *DbReaderBuilder) WithDefaultMetricsRecorder(metricsRecorder *DefaultMetricsRecorder) error {
+	_pointer := _self.ffiObject.incrementPointer("*DbReaderBuilder")
+	defer _self.ffiObject.decrementPointer()
+	_, _uniffiErr := rustCallWithError[*Error](FfiConverterError{}, func(_uniffiStatus *C.RustCallStatus) bool {
+		C.uniffi_slatedb_uniffi_fn_method_dbreaderbuilder_with_default_metrics_recorder(
+			_pointer, FfiConverterDefaultMetricsRecorderINSTANCE.Lower(metricsRecorder), _uniffiStatus)
+		return false
+	})
+	return _uniffiErr.AsError()
+}
+
 // Sets the filter policies used when decoding SST filter blocks.
 //
 // Must match (or be a superset of) the writer's policies so SST filter
@@ -5422,6 +5502,12 @@ func (_self *DbReaderBuilder) WithMergeOperator(mergeOperator MergeOperator) err
 }
 
 // Installs an application-defined metrics recorder.
+//
+// SlateDB registers and updates metrics from its own background threads,
+// so every call lands on a foreign recorder synchronously, off the thread
+// that opened the reader. Prefer
+// [`DbReaderBuilder::with_default_metrics_recorder`] when the host
+// language cannot service such calls freely.
 func (_self *DbReaderBuilder) WithMetricsRecorder(metricsRecorder MetricsRecorder) error {
 	_pointer := _self.ffiObject.incrementPointer("*DbReaderBuilder")
 	defer _self.ffiObject.decrementPointer()

@@ -83,6 +83,24 @@ Labels are fixed at registration time as `&[(&str, &str)]` key-value pairs. Slat
 uses labels to collapse related metrics into a single name (e.g. `slatedb.db.request_count`
 with an `op` label instead of separate counters per operation).
 
+### Recorder callbacks must not block
+
+SlateDB calls both the registration methods and the handle methods inline, from
+whichever task produced the metric — including background tasks that hold
+internal locks. Treat every callback as a contained, non-blocking operation:
+update an atomic (like `DefaultMetricsRecorder` does) or hand the value to a
+queue that a separate thread drains for export. A callback that blocks can stall
+the database, and one that waits on something which is itself waiting on SlateDB
+deadlocks it.
+
+This matters most in the language bindings, where a recorder implemented in the
+host language turns every metric update into a synchronous call back across the
+FFI boundary. The Node binding is the sharpest case, because that call has to be
+serviced by the event loop: attach the built-in recorder with
+`with_default_metrics_recorder(...)` and poll `snapshot()` instead of
+implementing a recorder in JavaScript. See the
+[Node binding README](https://github.com/slatedb/slatedb/blob/main/bindings/node/README.md#metrics).
+
 ## Available metrics
 
 All metric names use dot-separated notation: `slatedb.<subsystem>.<metric>`.
