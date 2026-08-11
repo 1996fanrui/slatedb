@@ -1,0 +1,24 @@
+# Standalone crate: not part of the top-level SlateDB workspace.
+[workspace]
+
+[package]
+name = "write-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Single-threaded write benchmark: SlateDB (native / inline / inline+CAS) vs RocksDB, one aligned
+# config. Needs this checkout's experimental Db::put_local. See benches/write.rs.
+
+[dependencies]
+slatedb = { path = "../../slatedb", features = ["wal_disable", "moka", "foyer"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["async_tokio"] }
+rocksdb = "0.22"
+tempfile = "3"
+
+[[bench]]
+name = "write"
+harness = false

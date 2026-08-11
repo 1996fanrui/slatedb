@@ -181,6 +181,7 @@ pub struct DbBuilder<P: Into<Path>> {
     db_cache: Option<Arc<dyn DbCache>>,
     system_clock: Option<Arc<dyn SystemClock>>,
     gc_runtime: Option<Handle>,
+    write_runtime: Option<Handle>,
     compactor_builder: Option<CompactorBuilder<Path>>,
     gc_builder: Option<GarbageCollectorBuilder<Path>>,
     fp_registry: Arc<FailPointRegistry>,
@@ -204,6 +205,7 @@ impl<P: Into<Path>> DbBuilder<P> {
             db_cache: default_db_cache(),
             system_clock: None,
             gc_runtime: None,
+            write_runtime: None,
             compactor_builder: None,
             gc_builder: None,
             fp_registry: Arc::new(FailPointRegistry::new()),
@@ -286,6 +288,16 @@ impl<P: Into<Path>> DbBuilder<P> {
     /// Sets the garbage collection runtime to use for the database.
     pub fn with_gc_runtime(mut self, gc_runtime: Handle) -> Self {
         self.gc_runtime = Some(gc_runtime);
+        self
+    }
+
+    /// EXPERIMENT: places the batch-writer task on `runtime` instead of the one the database is
+    /// built on. Everything else (compactor, GC, flusher, monitor) is untouched. Point this at a
+    /// current-thread runtime that the caller also writes through, and the batch-writer runs on
+    /// the caller's own thread — the hand-off becomes a task switch instead of a cross-thread
+    /// wake-up, while background work keeps its worker threads. See `experiments/write-bench`.
+    pub fn with_write_runtime(mut self, runtime: Handle) -> Self {
+        self.write_runtime = Some(runtime);
         self
     }
 
@@ -632,7 +644,7 @@ impl<P: Into<Path>> DbBuilder<P> {
             WRITE_BATCH_TASK_NAME.to_string(),
             Box::new(WriteBatchEventHandler::new(inner.clone(), wal_buffer)),
             write_rx,
-            &tokio_handle,
+            self.write_runtime.as_ref().unwrap_or(&tokio_handle),
         )?;
 
         // Wraps a background component's (compactor, GC) raw main store in
