@@ -1,3 +1,4 @@
+#![cfg_attr(test, allow(clippy::absolute_paths))]
 mod admin;
 mod builder;
 mod config;

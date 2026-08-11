@@ -110,3 +110,8 @@ unexpected_cfgs = { level = "allow", check-cfg = [
     'cfg(tokio_unstable)',
 ] }
 unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+# Import SlateDB's own items with `use` instead of spelling out module paths
+# inline; see clippy.toml for the crates that stay exempt.
+absolute_paths = "warn"
