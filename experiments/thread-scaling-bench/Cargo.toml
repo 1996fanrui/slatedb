@@ -1,0 +1,21 @@
+# Standalone crate: not part of the top-level SlateDB workspace.
+[workspace]
+
+[package]
+name = "thread-scaling-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# How writer-thread count interacts with where the batch-writer task lives. See benches/scaling.rs.
+
+[dependencies]
+slatedb = { path = "../../slatedb", features = ["wal_disable", "moka", "foyer"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "scaling"
+harness = false
